@@ -1,0 +1,244 @@
+#!/bin/bash
+
+DETECTORNAME=detector
+DETE=./dete
+APP=./app
+TMP_SYSCALLFILE=tmp_address_file
+
+getsymbol(){
+	local tmp
+	while read tmp	#read until tmp is not null
+	do
+		if [ -n $tmp ]
+		then
+			if [ -a $tmp ]
+			then
+					SYMBOLMAP=$tmp
+					return 0
+			else
+				echo "$tmp is not exist"
+				continue
+			fi
+		else
+			continue
+		fi
+	done
+}	
+
+getknlsrc() {
+       local tmp
+       echo "Please input kernel source path:"
+       while read tmp
+       do
+               if [ -n $tmp ]
+               then
+                       if [ -a $tmp ]
+                       then
+                               KNLSRCDIR=$tmp
+                               break
+                       fi
+               fi
+       done
+       return 0
+}
+
+
+# get syscall addr
+getaddr(){
+	$APP -a
+}
+
+#get process information
+getprocinfo(){
+	$APP -b
+}
+
+gerneral(){
+	getaddr > $1
+}
+
+
+
+# first part: check kernel model and chracter device 
+
+
+if [ ! $UID = 0 ]
+then
+	echo "Superuser privileges are required"
+	exit 1
+fi
+
+# check character device
+cat /proc/devices |grep $DETECTORNAME >/dev/null
+if [ $? = 1 ]
+then 
+	echo "kernel model uninstall"
+	exit 1
+fi
+
+# check character file
+if [ ! -r $DETE ]
+then
+	echo "detector device is not exist"
+	exit 1
+fi
+
+# check application
+if [ ! -r $APP ]
+then
+	echo "detector is not exist"
+	exit 1
+fi
+
+# get syscall address information
+getaddr >$TMP_SYSCALLFILE
+if [ $? -ne 0 ]
+then
+	echo "get syscall address error"
+	exit 1
+fi
+
+
+# main
+TEMP=`getopt -o g:f:s:m:pd -n "detector" -- "$@"`
+
+if [ $? != 0 ] ; then echo "Terminating..." >&2; exit 1; fi
+
+eval set -- "$TEMP"
+
+check=false
+
+while true ; do
+	case "$1" in 
+		-g) echo "general syscall address file" 
+			gerneral $2	# output syscall addr in $2
+			shift 2 ;;
+		-p)
+			getprocinfo
+			shift ;;
+		-d) 
+			check=true	# check if have been hooked
+			shift ;;
+		-f) 
+			syscallfile=$2	# store syscall address file path
+			echo $syscallfile
+			shift 2 ;;
+		-m) 
+			sysmap=$2	# store sysmap file path
+			shift 2 ;;
+		-s) 
+			knlpath=$2	# store kernel source path
+			shift 2 ;;
+		--)  shift ;break;;
+		 *) echo "internal error" ;exit 1;
+	esac
+done
+
+if $check ;then
+
+# set syscall address path
+		SYSCALLTBLFILE=/arch/x86/syscalls/syscall_64.tbl
+		if [ -z $knlpath ] ;then
+			KNLSRCDIR=/usr/src/linux
+			DEFTBL=./def.tbl
+			SYSCALLTBL=$KNLSRCDIR$SYSCALLTBLFILE
+		
+			if [ ! -e $KNLSRCDIR ]
+			then
+				echo "no kernel source, please input kernel source path or use default tbl"
+				echo -n "use default tbl?(y/n)"
+				while read tmp
+				do
+					if [ -n $tmp ] ;then
+						if [ $tmp = 'y' ] ;then
+							SYSCALLTBL=$DEFTBL
+							break
+						fi
+						if [ $tmp = 'n' ] ;then
+							getknlsrc
+							SYSCALLTBL=$KNLSRCDIR$SYSCALLTBLFILE
+							break
+						fi
+						echo -n "use default tbl?(y/n)"
+					fi
+				done
+			fi
+
+
+			if [ ! -r $SYSCALLTBL ]
+			then
+				echo "Read $SYSCALLTBL error, exting..."
+				exit -1
+			fi
+			
+			systbl=$SYSCALLTBL
+		else
+			systbl=$knlpath$SYSCALLTBLFILE
+		fi
+	
+	# use specific syscall address file
+	if [ ! -z $syscallfile ];then
+		awk '/^[[:digit:]]/ {print}' $systbl | while read temp 
+		do 
+			symnum=$(echo $temp |awk '{print $1}')
+			symname=$(echo $temp |awk '{print $3}')
+
+			if [ -n "${symnum}" ]
+			then
+				addre1=`grep "^${symnum}[[:space:]]" $syscallfile |awk '{print $2}'`
+				addre2=`grep "^${symnum}[[:space:]]" $TMP_SYSCALLFILE |awk '{print $2}'`
+				if [ ${addre1} != ${addre2} ]
+				then
+					echo "System call ${symname} have been hook"
+				fi
+			fi
+		done
+	else	#use system.map
+		if [ -z $sysmap ] ;then		#set system.map path
+			# System.map path variable
+			SYMBOLMAPFILE=$(ls /boot |grep "^System.map" |grep "$(uname -a |awk '{print $3}')$")
+			SYMBOLDIR="/boot/"
+			SYMBOLMAP=$SYMBOLDIR$SYMBOLMAPFILE
+			
+			# get System.map path
+			if [ -z $SYMBOLMAPFILE ]
+			then
+				echo "Can't find /boot/System.map, Please input file fullpath:"
+				getsymbol
+			fi
+
+			if [ ! -r $SYMBOLMAP ]
+			then
+				echo "System.map read error, exiting...here?"
+				exit -1
+			fi
+			
+			sysmap=$SYMBOLMAP
+			
+		fi
+		
+		#separate each line 
+		awk '/^[[:digit:]]/ {print}' $systbl | while read temp 
+		do 
+			symnum=$(echo $temp |awk '{print $1}')
+			symname=$(echo $temp |awk '{print $3}')
+			symbol=$(echo $temp |awk '{print $4}')
+	
+
+			if [ -n "${symbol}" ]
+			then
+				addre1=`grep "[[:space:]]${symbol}$" $sysmap |awk '{print $1}'`
+				addre2=`grep "^${symnum}[[:space:]]" $TMP_SYSCALLFILE |awk '{print $2}'`
+				if [ ${addre1} != ${addre2} ]
+				then
+					echo "System call ${symname} have been hook"
+				fi
+			fi
+		done
+	fi
+fi
+
+
+#clean
+rm $TMP_SYSCALLFILE
+

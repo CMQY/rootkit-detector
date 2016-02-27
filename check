@@ -1,0 +1,38 @@
+#!/bin/bash
+
+DEVNAME="detector"
+DEVNODFILE="./dete"
+LKMPATH="./dete.ko"
+# Superuser 
+if [ $UID -ne 0 ] ;then
+	echo "Superuser privileges are required"	
+	exit 1
+fi
+
+
+# If have install device
+cat /proc/devices |grep $DEVNAME >/dev/null
+if [ $? != 0 ] ;then
+	if [ -e $LKMPATH ] ;then
+		insmod $LKMPATH
+		if [ $? != 0 ] ;then
+        		echo "can't install kernel model"
+        		exit 1
+		fi
+	else
+		echo "no kernel model" ; exit 1
+	fi
+fi
+
+if [ -e $DEVNODFILE ] ;then
+	rm -rf $DEVNODFILE
+fi
+
+# if there is character device file,if not ,get the device number and mknod
+if [ ! -e $DEVNODFILE ] ;then
+	devno=`cat /proc/devices |egrep  "[[:space:]]$DEVNAME$" |awk '{print $1}'`
+	mknod $DEVNODFILE c $devno 1
+	if [ $? != 0 ] ;then
+		echo "mknod error ,Terminating..." ;exit 1;
+	fi
+fi

@@ -1,0 +1,9 @@
+#!/bin/bash
+lsmod |grep test_modu >/dev/null
+if [ $? -ne 0 ]
+then 
+	insmod test_modu.ko
+else
+	echo "system call sys_open have been hook"
+fi
+
